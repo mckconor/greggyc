@@ -7,7 +7,7 @@
 #include <assert.h>
 #include <omp.h>
 
-
+#include <immintrin.h>
 
 
 /* the following two definitions of DEBUGGING control whether or not
@@ -151,21 +151,117 @@ void matmul(struct complex ** A, struct complex ** B, struct complex ** C, int a
   }
 }
 
-/* the fast version of matmul written by the team */
 void team_matmul(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
+
+ if(a_rows <14 || b_cols < 14)
+ {
+    matmul(A,B,C,a_rows,a_cols,b_cols);
+
+ }
+ int i, j, k;
+ #pragma omp parallel for
+ for(i=0; i<a_rows; i++){
+   for(j=0; j<b_cols; j++){
+     struct complex sum;
+     sum.real = 0.0;
+     sum.imag = 0.0;
+     for(k=0; k<a_cols; k++){
+       // the following code does: sum += A[i][k] * B[k][j];
+       struct complex product;
+       product.real = A[i][k].real * B[k][j].real - A[i][k].imag * B[k][j].imag;
+       product.imag = A[i][k].real * B[k][j].imag + A[i][k].imag * B[k][j].real;
+       sum.real += product.real;
+       sum.imag += product.imag;
+   }
+   C[i][j] = sum;
+  }
+ }
+}
+
+//Conor going completely mad over here
+void team_matmulV2(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
+  // __m128 a1 = _mm_set1_ps(a_rows);                          //A1 represents rows of A
+  // __m128 a2 = _mm_set1_ps(a_cols);                          //A2 represents columns of A
+  // __m128 b2 = _mm_set1_ps(b_cols);                          //B2 represents columns of B
+  // __m128 result = _mm_set1_ps(a_rows * b_cols);             //Resulting Vector of size A1*B2
+  // __m128 temp = _mm_set1_ps(a_rows * b_cols);               //Temp?
+
+  // __m128 x1, x2, y1, y2, prodReal, prodImag;                //Used for calculations
+
+  // struct complex sum;
+  // __m128 sumReal = _mm_load_ps(&sum.real);                  //Set to value in complex sum.real
+  // __m128 sumImag = _mm_loadu_ps(&sum.imag);                 //Set to value in complex sum.imag
+  // _mm_xor_ps(sumReal, sumReal);                             //init to 0
+  // _mm_xor_ps(sumImag, sumImag);
+
+  // int i, j, k;
+  // #pragma omp parallel for
+  // for(i=0; i<sizeof(a1); i+= 4){
+  //   #pragma omp parallel for
+  //   for(j=0; j<sizeof(b2); j+= 4){
+  //     #pragma opm parallel for
+  //     for(k=0; k<sizeof(a2); k+=4){
+  //       struct complex product;
+  //       x1 = _mm_loadu_ps(&A[i][k].real);
+  //       x2 = _mm_loadu_ps(&B[k][j].real);
+  //       y1 = _mm_loadu_ps(&A[i][k].imag);
+  //       y2 = _mm_loadu_ps(&B[k][j].imag);
+
+  //       prodReal = _mm_sub_ps(_mm_mul_ps(x1, x2), _mm_mul_ps(y1, y2));
+  //       prodImag = _mm_add_ps(_mm_mul_ps(x1, y2), _mm_mul_ps(y1, x2));
+
+  //       _mm_storeu_ps(&product.real, prodReal);
+  //       _mm_storeu_ps(&product.imag, prodImag);
+  //     }
+  //     sumReal = _mm_hadd_ps(sumReal, prodReal);               //Horizontal add
+  //     sumImag = _mm_hadd_ps(sumImag, prodImag);
+  //   }
+  //   _mm_storeu_ps(&C[i][j], sumReal);
+  //   _mm_storeu_ps(&C[i][j], sumImag);
+  // }
+}
+
+//Conor mad once more
+void team_matmulV3(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
   int i, j, k;
-  float realSum, imagSum;
-  #pragma omp parallel for collapse(2)
-  for (i = 0 ; i < a_rows ; i++) {
-    for(j = 0 ; j < b_cols ; j++) {
-      realSum = 0.0;
-      imagSum = 0.0;
-      for(k = 0 ; k < a_cols ; k++) {
-        realSum += A[i][k].real * B[k][j].real - A[i][k].imag * B[k][j].imag;
-        imagSum += A[i][k].real * B[k][j].imag + A[i][k].imag * B[k][j].real;
+  
+  struct complex sum;
+  __m128 sumReal = _mm_loadu_ps(&sum.real);
+  __m128 sumImag = _mm_loadu_ps(&sum.imag);
+
+  __m128 a1, b1, temp1, temp2;
+  __m128 prodReal, prodImag;
+
+  #pragma omp parallel for shared (A, B, C) private (i, j, k)
+  for(i=0; i<a_rows; i++){
+    for(j=0; j<b_cols; j++){
+      _mm_xor_ps(sumReal, sumReal);
+      _mm_xor_ps(sumImag, sumImag);
+
+      for(k=0; k<a_cols; k+=4){
+        a1 = _mm_loadu_ps((float*) &A[i][k]);
+        b1 = _mm_loadu_ps((float*) &B[k][j]);
+
+        temp1 = _mm_mul_ps(a1, b1);
+        temp2 = _mm_shuffle_ps(temp1, temp1, _MM_SHUFFLE(2, 3, 0 ,1));
+        prodReal = _mm_sub_ps(temp1, temp2);
+
+        temp2 = _mm_shuffle_ps(b1, b1, _MM_SHUFFLE(2, 3, 0 ,1));
+        temp1 = _mm_mul_ps(a1, temp2);
+        prodImag = _mm_hadd_ps(temp1, temp1);
+        
+        sumReal = _mm_add_ps(sumReal, prodReal);
+        sumImag = _mm_add_ps(sumImag, prodImag);
       }
-      C[i][j].real = realSum;
-      C[i][j].imag = imagSum;
+      sumReal = _mm_hadd_ps(sumReal, sumReal);
+      sumReal = _mm_hadd_ps(sumReal, sumReal);
+      sum.real = sumReal[0];
+
+      sumImag = _mm_hadd_ps(sumImag, sumImag);
+      sumImag = _mm_hadd_ps(sumImag, sumImag);
+      sum.imag = sumImag[0];
+
+      C[i][j] = sum;
     }
   }
 }
@@ -226,7 +322,8 @@ int main(int argc, char ** argv)
   gettimeofday(&start_time, NULL);
 
   /* perform matrix multiplication */
-  team_matmul(A, B, C, a_dim1, a_dim2, b_dim2);
+  //team_matmul(A, B, C, a_dim1, a_dim2, b_dim2);
+  team_matmulV3(A, B, C, a_dim1, a_dim2, b_dim2);
 
   /* record finishing time */
   gettimeofday(&stop_time, NULL);
