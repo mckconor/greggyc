@@ -8,7 +8,6 @@
 #include <omp.h>
 
 #include <immintrin.h>
-#include <x86intrin.h>
 
 
 /* the following two definitions of DEBUGGING control whether or not
@@ -152,27 +151,29 @@ void matmul(struct complex ** A, struct complex ** B, struct complex ** C, int a
   }
 }
 
-void low_matmul(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
+/* the fast version of matmul written by the team */
+void team_matmul(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
+  int i,j,k ;
+  float real, imag; 
 
- int i, j, k;
- #pragma omp parallel for private (i, j, k) shared(A, B, C)
- for(i=0; i<a_rows; i++){
-   for(j=0; j<b_cols; j++){
-     struct complex sum;
-     sum.real = 0.0;
-     sum.imag = 0.0;
-     for(k=0; k<a_cols; k++){
-       // the following code does: sum += A[i][k] * B[k][j];
-       struct complex product;
-       product.real = A[i][k].real * B[k][j].real - A[i][k].imag * B[k][j].imag;
-       product.imag = A[i][k].real * B[k][j].imag + A[i][k].imag * B[k][j].real;
-       sum.real += product.real;
-       sum.imag += product.imag;
-   }
-   C[i][j] = sum;
+  #pragma omp parallel for private(i,j,k) shared(real,imag)
+  for ( i = 0; i < a_rows; i++ ) 
+  {
+    for(j = 0; j< a_cols; j++ )
+    {
+	real = 0.0;
+	imag = 0.0;
+	for(k=0;k<b_cols;k++){
+		real += (A[i][k].real * B[k][j].real) -( A[i][k].imag * B[k][j].imag);
+		imag += (A[i][k].real * B[k][j].imag) + (A[i][k].imag * B[k][j].real);
+	}
+	C[i][j].real = real;
+	C[i][j].imag = imag;
+    }
   }
- }
 }
+
+
 
 //Conor going completely mad over here
 void team_matmulV2(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
@@ -217,52 +218,47 @@ void team_matmulV2(struct complex ** A, struct complex ** B, struct complex ** C
   // }
 }
 
-//Going mad once more
+//Conor mad once more
 void team_matmulV3(struct complex ** A, struct complex ** B, struct complex ** C, int a_rows, int a_cols, int b_cols) {
   int i, j, k;
   
-  __m128 sumReal = _mm_setr_ps(0,0,0,0);
-  __m128 sumImag = _mm_setr_ps(0,0,0,0);
+  struct complex sum;
+  __m128 sumReal = _mm_loadu_ps(&sum.real);
+  __m128 sumImag = _mm_loadu_ps(&sum.imag);
 
-  if(a_rows <= 2){
-    low_matmul(A, B, C, a_rows, a_cols, b_cols);
-  }
-  else {
-    #pragma omp parallel for shared (A, B, C, sumReal, sumImag) private (i, j, k)
-    for(i=0; i<a_rows; i++){
-      for(j=0; j<b_cols; j++){
-        _mm_xor_ps(sumReal, sumReal);
-        _mm_xor_ps(sumImag, sumImag);
-        struct complex sum;
-        __m128 a1, b1, temp1, temp2;
-        __m128 prodReal, prodImag;
+  __m128 a1, b1, temp1, temp2;
+  __m128 prodReal, prodImag;
 
-        for(k=0; k<a_cols; k+=4){
-    
-          a1 = _mm_loadu_ps((float*) &A[i][k]);
-          b1 = _mm_loadu_ps((float*) &B[k][j]);
+  #pragma omp parallel for shared (A, B, C) private (i, j, k)
+  for(i=0; i<a_rows; i++){
+    for(j=0; j<b_cols; j++){
+      _mm_xor_ps(sumReal, sumReal);
+      _mm_xor_ps(sumImag, sumImag);
 
-          temp1 = _mm_mul_ps(a1, b1);
-          temp2 = _mm_shuffle_ps(temp1, temp1, _MM_SHUFFLE(2, 3, 0 ,1));
-          prodReal = _mm_sub_ps(temp1, temp2);
+      for(k=0; k<a_cols; k+=4){
+        a1 = _mm_loadu_ps((float*) &A[i][k]);
+        b1 = _mm_loadu_ps((float*) &B[k][j]);
 
-          temp2 = _mm_shuffle_ps(b1, b1, _MM_SHUFFLE(2, 3, 0 ,1));
-          temp1 = _mm_mul_ps(a1, temp2);
-          prodImag = _mm_hadd_ps(temp1, temp1);
-          
-          sumReal = _mm_add_ps(sumReal, prodReal);
-          sumImag = _mm_add_ps(sumImag, prodImag);
-        }
-        sumReal = _mm_hadd_ps(sumReal, sumReal);
-        sumReal = _mm_hadd_ps(sumReal, sumReal);
-        sum.real = sumReal[0];
+        temp1 = _mm_mul_ps(a1, b1);
+        temp2 = _mm_shuffle_ps(temp1, temp1, _MM_SHUFFLE(2, 3, 0 ,1));
+        prodReal = _mm_sub_ps(temp1, temp2);
 
-        sumImag = _mm_hadd_ps(sumImag, sumImag);
-        sumImag = _mm_hadd_ps(sumImag, sumImag);
-        sum.imag = sumImag[0];
-
-        C[i][j] = sum;
+        temp2 = _mm_shuffle_ps(b1, b1, _MM_SHUFFLE(2, 3, 0 ,1));
+        temp1 = _mm_mul_ps(a1, temp2);
+        prodImag = _mm_hadd_ps(temp1, temp1);
+        
+        sumReal = _mm_add_ps(sumReal, prodReal);
+        sumImag = _mm_add_ps(sumImag, prodImag);
       }
+      sumReal = _mm_hadd_ps(sumReal, sumReal);
+      sumReal = _mm_hadd_ps(sumReal, sumReal);
+      sum.real = sumReal[0];
+
+      sumImag = _mm_hadd_ps(sumImag, sumImag);
+      sumImag = _mm_hadd_ps(sumImag, sumImag);
+      sum.imag = sumImag[0];
+
+      C[i][j] = sum;
     }
   }
 }
@@ -324,7 +320,7 @@ int main(int argc, char ** argv)
 
   /* perform matrix multiplication */
   //team_matmul(A, B, C, a_dim1, a_dim2, b_dim2);
-  team_matmulV3(A, B, C, a_dim1, a_dim2, b_dim2);
+  team_matmul(A, B, C, a_dim1, a_dim2, b_dim2);
 
   /* record finishing time */
   gettimeofday(&stop_time, NULL);
